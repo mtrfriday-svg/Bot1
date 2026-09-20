@@ -232,6 +232,20 @@ bool Assets::LvglStrategy::InitializePartition(Assets* assets) {
                          verify_buf[12], verify_buf[13], verify_buf[14], verify_buf[15]);
                 ESP_LOGI(TAG, "DIAG: checksum via direct partition_read = 0x%lx (mmap-based was 0x%lx, stored is 0x%lx)",
                          (unsigned long)direct_read_checksum, (unsigned long)calculated_checksum, (unsigned long)stored_chksum);
+
+                // --- CHUNKED DIAGNOSTIC: split the data into 8 equal segments and
+                // checksum each one independently, so we can pinpoint which byte
+                // range diverges from the known-good build artifact.
+                const int kChunks = 8;
+                uint32_t chunk_size = stored_len / kChunks;
+                for (int i = 0; i < kChunks; i++) {
+                    uint32_t chunk_start = i * chunk_size;
+                    uint32_t this_chunk_size = (i == kChunks - 1) ? (stored_len - chunk_start) : chunk_size;
+                    uint32_t chunk_checksum = CalculateChecksum((const char*)(verify_buf + chunk_start), this_chunk_size);
+                    ESP_LOGI(TAG, "DIAG: chunk %d [offset %lu, len %lu] checksum = 0x%lx",
+                             i, (unsigned long)chunk_start, (unsigned long)this_chunk_size, (unsigned long)chunk_checksum);
+                }
+                // --- END CHUNKED DIAGNOSTIC
             } else {
                 ESP_LOGE(TAG, "DIAG: esp_partition_read failed: %s", esp_err_to_name(rd_err));
             }
@@ -441,7 +455,7 @@ bool Assets::LvglStrategy::Apply(Assets* assets, bool refresh_display_theme) {
                     return false;
                 }
                 auto background_image = std::make_shared<LvglCBinImage>(ptr);
-                dark_theme->set_background_image (background_image);
+       dark_theme->set_background_image(background_image);
             }
         }
     }
