@@ -90,7 +90,7 @@ jobs:
           name: xiaozhi_${{ matrix.full_name }}_${{ github.sha }}
           path: build/merged-binary.bin
           if-no-files-found: error
-        - name: Upload generated assets (diagnostic)
+      - name: Upload generated assets (diagnostic)
         uses: actions/upload-artifact@v4
         with:
           name: assets_${{ matrix.full_name }}_${{ github.sha }}
