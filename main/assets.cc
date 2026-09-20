@@ -130,81 +130,35 @@ bool Assets::LoadSrmodelsFromIndex(Assets* assets, cJSON* root) {
             ESP_LOGE(TAG, "The srmodels file %s is not found", srmodels_file.c_str());
         }
     }
-
-    if (need_delete_root) {
-        cJSON_Delete(root);
+(unsigned long)map_size, (unsigned long)assets->partition_->size);
+    ESP_LOGI(TAG, "DIAG: first 16 bytes via mmap: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+             (unsigned)(uint8_t)mmap_root_[12], (unsigned)(uint8_t)mmap_root_[13], (unsigned)(uint8_t)mmap_root_[14],
+             (unsigned)(uint8_t)mmap_root_[15], (unsigned)(uint8_t)mmap_root_[16], (unsigned)(uint8_t)mmap_root_[17],
+             (unsigned)(uint8_t)mmap_root_[18], (unsigned)(uint8_t)mmap_root_[19], (unsigned)(uint8_t)mmap_root_[20],
+             (unsigned)(uint8_t)mmap_root_[21], (unsigned)(uint8_t)mmap_root_[22], (unsigned)(uint8_t)mmap_root_[23],
+             (unsigned)(uint8_t)mmap_root_[24], (unsigned)(uint8_t)mmap_root_[25], (unsigned)(uint8_t)mmap_root_[26],
+             (unsigned)(uint8_t)mmap_root_[27]);
+    {
+        uint8_t* verify_buf = (uint8_t*)heap_caps_malloc(stored_len, MALLOC_CAP_SPIRAM);
+        if (verify_buf != nullptr) {
+            esp_err_t rd_err = esp_partition_read(assets->partition_, 12, verify_buf, stored_len);
+            if (rd_err == ESP_OK) {
+                uint32_t direct_read_checksum = CalculateChecksum((const char*)verify_buf, stored_len);
+                ESP_LOGI(TAG, "DIAG: first 16 bytes via esp_partition_read: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+                         verify_buf[0], verify_buf[1], verify_buf[2], verify_buf[3], verify_buf[4], verify_buf[5],
+                         verify_buf[6], verify_buf[7], verify_buf[8], verify_buf[9], verify_buf[10], verify_buf[11],
+                         verify_buf[12], verify_buf[13], verify_buf[14], verify_buf[15]);
+                ESP_LOGI(TAG, "DIAG: checksum via direct partition_read = 0x%lx (mmap-based was 0x%lx, stored is 0x%lx)",
+                         (unsigned long)direct_read_checksum, (unsigned long)calculated_checksum, (unsigned long)stored_chksum);
+            } else {
+                ESP_LOGE(TAG, "DIAG: esp_partition_read failed: %s", esp_err_to_name(rd_err));
+            }
+heap_caps_free(verify_buf);
+        } else {
+            ESP_LOGE(TAG, "DIAG: failed to allocate verify_buf (%lu bytes)", (unsigned long)stored_len);
+        }
     }
-    return false;
-}
-
-#if HAVE_LVGL
-uint32_t Assets::LvglStrategy::CalculateChecksum(const char* data, uint32_t length) {
-    uint32_t checksum = 0;
-    for (uint32_t i = 0; i < length; i++) {
-        checksum += static_cast<uint8_t>(data[i]);
-    }
-    return checksum & 0xFFFF;
-}
-
-bool Assets::LvglStrategy::InitializePartition(Assets* assets) {
-    assets->partition_valid_ = false;
-    assets_.clear();
-
-    if (!Assets::FindPartition(assets)) {
-        return false;
-    }
-
-    // Read the header first so we only mmap the payload in use. On ESP32-C3 the
-    // free MMU data pages can be smaller than a full 1MB assets partition even
-    // when the packed assets.bin itself fits.
-    uint8_t header[12] = {};
-    esp_err_t err = esp_partition_read(assets->partition_, 0, header, sizeof(header));
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to read assets header: %s", esp_err_to_name(err));
-        return false;
-    }
-
-    uint32_t stored_files = *(uint32_t*)(header + 0);
-    uint32_t stored_chksum = *(uint32_t*)(header + 4);
-    uint32_t stored_len = *(uint32_t*)(header + 8);
-
-    if (stored_len == 0 || stored_len > assets->partition_->size - 12) {
-        ESP_LOGD(TAG, "The stored_len (0x%lx) is greater than the partition size (0x%lx) - 12",
-                 stored_len, assets->partition_->size);
-        return false;
-    }
-
-    constexpr uint32_t kMmuPageSize = 64 * 1024;
-    uint32_t map_size = 12 + stored_len;
-    map_size = (map_size + kMmuPageSize - 1) & ~(kMmuPageSize - 1);
-    if (map_size > assets->partition_->size) {
-        map_size = assets->partition_->size;
-    }
-
-    int free_pages = spi_flash_mmap_get_free_pages(SPI_FLASH_MMAP_DATA);
-    uint32_t storage_size = free_pages * kMmuPageSize;
-    ESP_LOGI(TAG, "The storage free size is %ld KB", storage_size / 1024);
-    ESP_LOGI(TAG, "The assets map size is %ld KB (partition %ld KB)", map_size / 1024,
-             assets->partition_->size / 1024);
-    if (storage_size < map_size) {
-        ESP_LOGE(TAG, "The free size %ld KB is less than assets map required %ld KB",
-                 storage_size / 1024, map_size / 1024);
-        return false;
-    }
-
-    err = esp_partition_mmap(assets->partition_, 0, map_size, ESP_PARTITION_MMAP_DATA,
-                             (const void**)&mmap_root_, &mmap_handle_);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to mmap assets partition: %s", esp_err_to_name(err));
-        return false;
-    }
-
-    assets->partition_valid_ = true;
-
-    auto start_time = esp_timer_get_time();
-    uint32_t calculated_checksum = CalculateChecksum(mmap_root_ + 12, stored_len);
-    auto end_time = esp_timer_get_time();
-    ESP_LOGI(TAG, "The checksum calculation time is %d ms", int((end_time - start_time) / 1000));
+    // --- END DIAGNOSTIC
 
     if (calculated_checksum != stored_chksum) {
         ESP_LOGE(TAG, "The calculated checksum (0x%lx) does not match the stored checksum (0x%lx)",
@@ -319,7 +273,8 @@ bool Assets::LvglStrategy::Apply(Assets* assets, bool refresh_display_theme) {
                         .size = font_size->valueint,
                         .bpp = font_bpp->valueint,
                     };
-                } else {
+                }
+else {
                     ESP_LOGW(TAG, "Loaded custom text font without compatible glyph push metadata");
                 }
             }
@@ -478,8 +433,7 @@ bool Assets::EmoteStrategy::GetAssetData(Assets* assets, const std::string& name
 bool Assets::EmoteStrategy::Apply(Assets* assets, bool refresh_display_theme) {
     assets->DisableTextFontGlyphPush();
     Assets::LoadSrmodelsFromIndex(assets);
-
-    auto display = Board::GetInstance().GetDisplay();
+auto display = Board::GetInstance().GetDisplay();
     if (display != nullptr) {
         display->LoadAssets();
     }
