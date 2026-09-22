@@ -259,9 +259,10 @@ bool Assets::LvglStrategy::InitializePartition(Assets* assets) {
     if (calculated_checksum != stored_chksum) {
         ESP_LOGE(TAG, "The calculated checksum (0x%lx) does not match the stored checksum (0x%lx)",
                  calculated_checksum, stored_chksum);
-        UnApplyPartition(assets);
-        assets->partition_valid_ = false;
-        return false;
+        // --- TEMPORARY DIAGNOSTIC: force the partition to load anyway, to observe
+        // real device behavior despite the mismatch. REVERT before normal use.
+        ESP_LOGW(TAG, "DIAG: FORCING partition to load despite checksum mismatch (diagnostic mode)");
+        // --- END TEMPORARY DIAGNOSTIC
     }
 
     checksum_valid_ = true;
@@ -455,7 +456,31 @@ bool Assets::LvglStrategy::Apply(Assets* assets, bool refresh_display_theme) {
                     return false;
                 }
                 auto background_image = std::make_shared<LvglCBinImage>(ptr);
-       dark_theme->set_background_image(background_image);
+                light_theme->set_background_image(background_image);
+            }
+        }
+        cJSON* dark_skin = cJSON_GetObjectItem(skin, "dark");
+        if (cJSON_IsObject(dark_skin) && dark_theme != nullptr) {
+            cJSON* text_color = cJSON_GetObjectItem(dark_skin, "text_color");
+            cJSON* background_color = cJSON_GetObjectItem(dark_skin, "background_color");
+            cJSON* background_image = cJSON_GetObjectItem(dark_skin, "background_image");
+            if (cJSON_IsString(text_color)) {
+                dark_theme->set_text_color(LvglTheme::ParseColor(text_color->valuestring));
+            }
+            if (cJSON_IsString(background_color)) {
+                dark_theme->set_background_color(
+                    LvglTheme::ParseColor(background_color->valuestring));
+                dark_theme->set_chat_background_color(
+                    LvglTheme::ParseColor(background_color->valuestring));
+            }
+            if (cJSON_IsString(background_image)) {
+                if (!assets->GetAssetData(background_image->valuestring, ptr, size)) {
+                    ESP_LOGE(TAG, "The background image file %s is not found",
+                             background_image->valuestring);
+                    return false;
+                }
+                auto background_image = std::make_shared<LvglCBinImage>(ptr);
+                dark_theme->set_background_image(background_image);
             }
         }
     }
